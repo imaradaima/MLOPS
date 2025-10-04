@@ -1,1 +1,104 @@
+name: register-dataset
 
+on:
+  workflow_call:
+    inputs:
+      # If you're using a YAML schema file, point data_file to that (e.g., data-science/mlops/data.yml)
+      # If you're doing ad-hoc registration, point data_file to the actual file to register (e.g., data/used_cars.csv)
+      data_file:
+        required: true
+        type: string
+      resource_group:
+        required: true
+        type: string
+      workspace_name:
+        required: true
+        type: string
+      # When provided (non-empty), we perform ad-hoc registration:
+      #   file_type must be one of: uri_file, uri_folder, mltable
+      #   name is required and becomes the asset name.
+      file_type:
+        required: false
+        type: string
+        default: ""
+      name:
+        required: false
+        type: string
+        default: ""
+      # Optional version pin; if blank, AML will auto-version.
+      version:
+        required: false
+        type: string
+        default: ""
+    secrets:
+      creds:
+        required: true
+
+jobs:
+  register-dataset:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.creds }}
+
+      - name: Install/Update Azure ML CLI extension
+        run: |
+          set -euo pipefail
+          az extension add -n ml -y || az extension update -n ml
+
+      - name: Set Azure ML defaults
+        run: |
+          set -euo pipefail
+          az configure --defaults \
+            group="${{ inputs.resource_group }}" \
+            workspace="${{ inputs.workspace_name }}" \
+            location="eastus"
+          az ml workspace show -o table
+
+      # Mode A: YAML schema file (recommended)
+      - name: Register dataset from YAML
+        if: ${{ inputs.file_type == '' }}
+        env:
+          DATA_FILE: ${{ github.workspace }}/${{ inputs.data_file }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -n "$VERSION" ]; then
+            az ml data create --file "$DATA_FILE" --version "$VERSION"
+          else
+            az ml data create --file "$DATA_FILE"
+          fi
+
+      # Mode B: Ad-hoc registration (inline path + type + name)
+      - name: Register dataset ad-hoc (inline)
+        if: ${{ inputs.file_type != '' }}
+        env:
+          PATH_OR_TABLE: ${{ github.workspace }}/${{ inputs.data_file }}
+          TYPE: ${{ inputs.file_type }}
+          NAME: ${{ inputs.name }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "$NAME" ]; then
+            echo "When file_type is provided, 'name' must also be provided." >&2
+            exit 1
+          fi
+
+          # Build args
+          ARGS=( --name "$NAME" --type "$TYPE" )
+          if [ -n "$VERSION" ]; then
+            ARGS+=( --version "$VERSION" )
+          fi
+
+          # TYPE decides which flag to use for path:
+          # - uri_file / uri_folder -> --path
+          # - mltable -> --path directory containing MLTable
+          az ml data create "${ARGS[@]}" --path "$PATH_OR_TABLE"
+
+      - name: Show registered assets
+        run: az ml data list -o table
