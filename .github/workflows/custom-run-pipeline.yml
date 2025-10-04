@@ -5,7 +5,7 @@ on:
     inputs:
       parameters_file:
         required: true
-        type: string          # path to your pipeline YAML (job) in repo
+        type: string
       resource_group:
         required: true
         type: string
@@ -27,70 +27,55 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Azure login
-        uses: azure/login@v2
+        uses: azure/login@v1
         with:
           creds: ${{ secrets.creds }}
 
-      - name: Install / update Azure ML CLI extension
+      - name: Install AML extension
         run: |
-          set -euo pipefail
           az extension add -n ml -y || az extension update -n ml
 
-      - name: Set AML defaults & verify workspace
+      - name: Echo inputs and verify files
         run: |
-          set -euo pipefail
-          az configure --defaults \
-            group="${{ inputs.resource_group }}" \
-            workspace="${{ inputs.workspace_name }}" \
-            location="eastus"
-          az ml workspace show -o table
+          echo "RG=${{ inputs.resource_group }}"
+          echo "WS=${{ inputs.workspace_name }}"
+          echo "PARAMS_FILE=${{ github.workspace }}/${{ inputs.parameters_file }}"
+          test -f "${{ github.workspace }}/${{ inputs.parameters_file }}" || { echo "❌ Parameters file not found"; exit 11; }
+          echo "Repo tree:"
+          ls -R
 
-      - name: Run pipeline job and wait
-        env:
-          PIPELINE_FILE: ${{ github.workspace }}/${{ inputs.parameters_file }}
-          JOB_NAME: ${{ inputs.job_name }}
+      - name: Validate pipeline file
         run: |
-          set -euo pipefail
+          az ml job validate \
+            --file "${{ github.workspace }}/${{ inputs.parameters_file }}" \
+            --resource-group "${{ inputs.resource_group }}" \
+            --workspace-name "${{ inputs.workspace_name }}" \
+          || { echo "❌ az ml job validate failed"; exit 12; }
 
-          # Create the job (use provided name)
-          run_id=$(az ml job create \
-            --file "$PIPELINE_FILE" \
-            --name "$JOB_NAME" \
-            --query name -o tsv)
+      - name: Create job
+        id: create
+        run: |
+          set -e
+          RUN_ID=$(az ml job create \
+            --file "${{ github.workspace }}/${{ inputs.parameters_file }}" \
+            --resource-group "${{ inputs.resource_group }}" \
+            --workspace-name "${{ inputs.workspace_name }}" \
+            --name "${{ inputs.job_name }}" \
+            --query name -o tsv) || { echo "❌ az ml job create failed"; exit 13; }
 
-          if [[ -z "${run_id:-}" ]]; then
-            echo "❌ Job creation failed"; exit 3
-          fi
+          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+          echo "Created run: $RUN_ID"
+          az ml job show -n "$RUN_ID" -g "${{ inputs.resource_group }}" -w "${{ inputs.workspace_name }}" -o yaml
 
-          echo "▶️  Submitted job: $run_id"
-          az ml job show -n "$run_id" --web || true
+      - name: Stream until completion
+        run: |
+          RUN_ID="${{ steps.create.outputs.run_id }}"
+          echo "Streaming logs for: $RUN_ID"
+          az ml job stream -n "$RUN_ID" -g "${{ inputs.resource_group }}" -w "${{ inputs.workspace_name }}" || true
 
-          # Poll status until terminal state
-          terminal=("Completed" "Failed" "Canceled" "NotResponding")
-          running=("NotStarted" "Queued" "Starting" "Preparing" "Running" "Finalizing" "CancelRequested")
-
-          status=$(az ml job show -n "$run_id" --query status -o tsv)
-          echo "Current status: $status"
-
-          while [[ " ${running[*]} " =~ " ${status} " ]]; do
-            sleep 15
-            status=$(az ml job show -n "$run_id" --query status -o tsv)
-            echo "Current status: $status"
-          done
-
-          echo "Final status: $status"
-
-          if [[ "$status" != "Completed" ]]; then
-            echo "❌ Pipeline job failed or canceled"
-            # Surface service-side error message if available
-            az ml job show -n "$run_id" -o jsonc || true
-            exit 5
-          fi
-
-          # Print output artifact URIs (optional, helpful for downstream steps)
-          echo "Outputs:"
-          az ml job show -n "$run_id" --query outputs -o jsonc || true
-
-          
-         
-
+          STATUS=$(az ml job show -n "$RUN_ID" -g "${{ inputs.resource_group }}" -w "${{ inputs.workspace_name }}" --query status -o tsv)
+          echo "Final status: $STATUS"
+          case "$STATUS" in
+            Completed) exit 0 ;;
+            *) echo "❌ Pipeline finished with status: $STATUS"; exit 14 ;;
+          esac
