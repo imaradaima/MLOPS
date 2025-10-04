@@ -53,7 +53,7 @@ jobs:
       resource_group: ${{ needs.get-config.outputs.resource_group }}
       workspace_name: ${{ needs.get-config.outputs.aml_workspace }}
       environment_file: mlops/azureml/train/train-env.yml
-      conda_file: data-science/environment/train-conda.yml
+      conda_file: train-conda.yml
     secrets:
       creds: ${{ secrets.AZURE_CREDENTIALS }}
 
