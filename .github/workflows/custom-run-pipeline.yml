@@ -12,7 +12,7 @@ on:
       workspace_name:
         required: true
         type: string
-      job_name:
+      job_name:             # prefix; we'll add a unique suffix
         required: true
         type: string
     secrets:
@@ -23,7 +23,7 @@ jobs:
   run-pipeline:
     runs-on: ubuntu-latest
     steps:
-      - name: checkout
+      - name: Checkout
         uses: actions/checkout@v3
 
       - name: Azure login
@@ -38,21 +38,31 @@ jobs:
 
       - name: Show inputs and repo tree
         run: |
+          set -e
           echo "RG=${{ inputs.resource_group }}"
           echo "WS=${{ inputs.workspace_name }}"
-          echo "JOB=${{ inputs.job_name }}"
+          echo "JOB_PREFIX=${{ inputs.job_name }}"
           echo "PARAMS=${{ inputs.parameters_file }}"
           ls -la
           echo "-----"
-          ls -la "${{ github.workspace }}/$(dirname "${{ inputs.parameters_file }}")"
+          DIR="$(dirname "${{ inputs.parameters_file }}")"
+          if [ -d "$DIR" ]; then ls -la "$DIR"; fi
 
-      - name: Submit pipeline (force compute + stream logs)
+      - name: Submit pipeline (unique name + default compute + stream)
         run: |
-          set -e
+          set -euo pipefail
+
+          # Build a UNIQUE job name to avoid immutable-name errors
+          JOB_NAME="${{ inputs.job_name }}-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "Submitting AML job: $JOB_NAME"
+
           az ml job create \
             --file "${{ github.workspace }}/${{ inputs.parameters_file }}" \
             --resource-group "${{ inputs.resource_group }}" \
             --workspace-name "${{ inputs.workspace_name }}" \
-            --name "${{ inputs.job_name }}" \
+            --name "$JOB_NAME" \
             --set settings.default_compute=azureml:test-cluster \
             --only-show-errors --stream
+
+          echo "Submission completed for: $JOB_NAME"
+
