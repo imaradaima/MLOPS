@@ -19,7 +19,8 @@ outputs:
 
 settings:
   default_datastore: azureml:workspaceblobstore
-  default_compute: azureml:azureml:test-cluster
+  # You can keep this or remove it since the Action overrides it.
+  default_compute: azureml:test-cluster
   continue_on_step_failure: false
 
 jobs:
@@ -81,5 +82,3 @@ jobs:
       model_path: ${{parent.jobs.sweep_step.outputs.model_output}}
     outputs:
       model_info_output_path: ${{parent.outputs.model_info_output_path}}
-
-     
