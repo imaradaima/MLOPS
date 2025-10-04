@@ -1,1 +1,90 @@
+name: create-compute
 
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        required: true
+        type: string
+      size:
+        required: true
+        type: string
+      min_instances:
+        required: true
+        type: number
+      max_instances:
+        required: true
+        type: number
+      resource_group:
+        required: true
+        type: string
+      workspace_name:
+        required: true
+        type: string
+      cluster_tier:
+        required: false
+        type: string
+        default: "dedicated"   # default tier if caller doesn't provide one
+    secrets:
+      creds:
+        required: true
+
+jobs:
+  create-compute:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (optional)
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.creds }}
+
+      - name: Install/Update Azure ML CLI extension
+        run: |
+          set -euo pipefail
+          az extension add -n ml -y || az extension update -n ml
+
+      - name: Set Azure ML defaults
+        run: |
+          set -euo pipefail
+          az configure --defaults \
+            group="${{ inputs.resource_group }}" \
+            workspace="${{ inputs.workspace_name }}" \
+            location="eastus"
+          az ml workspace show -o table
+
+      # Idempotent create: if exists, just show; otherwise create
+      - name: Ensure compute exists (create if missing)
+        env:
+          CLUSTER_NAME: ${{ inputs.cluster_name }}
+          SIZE: ${{ inputs.size }}
+          MIN: ${{ inputs.min_instances }}
+          MAX: ${{ inputs.max_instances }}
+          TIER: ${{ inputs.cluster_tier }}
+        run: |
+          set -euo pipefail
+
+          if az ml compute show --name "$CLUSTER_NAME" >/dev/null 2>&1; then
+            echo "Compute '$CLUSTER_NAME' already exists. Showing details:"
+            az ml compute show --name "$CLUSTER_NAME" -o table
+
+            # OPTIONAL: update min/max scale if you want idempotent scaling
+            az ml compute update \
+              --name "$CLUSTER_NAME" \
+              --min-instances "$MIN" \
+              --max-instances "$MAX"
+          else
+            echo "Creating compute '$CLUSTER_NAME'..."
+            az ml compute create \
+              --name "$CLUSTER_NAME" \
+              --type AmlCompute \
+              --tier "$TIER" \
+              --size "$SIZE" \
+              --min-instances "$MIN" \
+              --max-instances "$MAX"
+          fi
+
+      - name: Show final compute
+        run: az ml compute show --name "${{ inputs.cluster_name }}" -o table
