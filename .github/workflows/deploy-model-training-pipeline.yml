@@ -1,19 +1,27 @@
 name: deploy-model-training-pipeline
 
 on:
+  # Enables the "Run workflow" button in the Actions tab
+  workflow_dispatch:
+  # Auto-run on pushes / PRs to main
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
 
+# Avoid overlapping runs from the same ref
+concurrency:
+  group: deploy-model-training-pipeline-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  # 1) Read workspace & RG from your repo config file
+  # 1) Read workspace & resource group from repo config
   get-config:
     uses: Azure/mlops-templates/.github/workflows/read-yaml.yml@main
     with:
       file_name: config-infra-prod.yml
 
-  # 2) Create (or reuse) the AML compute cluster
+  # 2) Create/reuse AML compute cluster
   create-compute:
     needs: get-config
     uses: ./.github/workflows/custom-create-compute.yml
@@ -28,7 +36,7 @@ jobs:
     secrets:
       creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-  # 3) Register the used-cars dataset (from mlops/azureml/train/data.yml)
+  # 3) Register the used-cars dataset
   register-dataset:
     needs: get-config
     uses: ./.github/workflows/custom-register-dataset.yml
@@ -52,14 +60,14 @@ jobs:
     secrets:
       creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-  # 5) Run the AML pipeline (preprocess → sweep train → register best)
+  # 5) Run the AML pipeline (prep → sweep train → register best)
   run-pipeline:
     needs: [ get-config, register-environment, create-compute, register-dataset ]
     uses: ./.github/workflows/custom-run-pipeline.yml
     with:
       resource_group: ${{ needs.get-config.outputs.resource_group }}
       workspace_name: ${{ needs.get-config.outputs.aml_workspace }}
-      parameters-file: mlops/azureml/train/newpipeline.yml   # matches reusable workflow input name
-      job-name: mlops-pipeline                               # matches reusable workflow input name
+      parameters-file: mlops/azureml/train/newpipeline.yml   # must match reusable workflow input name
+      job-name: mlops-pipeline                               # must match reusable workflow input name
     secrets:
       creds: ${{ secrets.AZURE_CREDENTIALS }}
