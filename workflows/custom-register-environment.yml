@@ -1,4 +1,3 @@
-
 name: register-environment
 
 on:
@@ -6,7 +5,7 @@ on:
     inputs:
       environment_file:
         required: true
-        type: string
+        type: string          # Path to env schema YAML (environment.schema.json)
       resource_group:
         required: true
         type: string
@@ -16,58 +15,72 @@ on:
       conda_file:
         required: false
         default: ""
-        type: string
-      dockerfile-location:
+        type: string          # Optional: separate conda yaml to override
+      dockerfile_path:
         required: false
         default: ""
-        type: string
+        type: string          # Optional: folder containing Dockerfile for build context
     secrets:
       creds:
         required: true
+
 jobs:
   register-environment:
     runs-on: ubuntu-latest
     steps:
-      - name: checkout
-        uses: actions/checkout@v3
-      - name: "Az CLI login"
-        uses: azure/login@v1
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
         with:
-          # Azure login can use either Service Principal or OIDC authentication:
-          # 1. Service Principal: Uses client ID, tenant ID, client secret/certificate
-          creds: ${{secrets.creds}}
-          #
-          # 2. OIDC (OpenID Connect): More secure, uses federated identity credentials
-          #    Example:
-          #    client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          #    tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          #    subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          #    enable-oidc: true
-          #
-          # Choose the appropriate method based on your security requirements
-          # client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          # tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          # subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          # Uncomment next line to use OIDC
-          # enable-oidc: true
-      - name: install-extension
-        run: az extension add -n ml -y
-      - name: update-extension
-        run: az extension update -n ml
-      - name: list-extentions
-        run: az extension list
-      - name: create-environment-from-file-with-conda
-        if: ${{ inputs.conda_file != ''}}
+          creds: ${{ secrets.creds }}
+
+      - name: Install/Update Azure ML CLI extension
         run: |
-          az ml environment create --file ${{ github.workspace }}/${{ inputs.environment_file }} --resource-group ${{ inputs.resource_group }} \
-                                --workspace-name ${{ inputs.workspace_name }} --conda-file ${{ github.workspace }}/${{ inputs.conda_file }}
-      - name: create-environment-from-file-without-conda
-        if: ${{ inputs.conda_file == ''}}
+          set -euo pipefail
+          az extension add -n ml -y || az extension update -n ml
+
+      - name: Set AML defaults
         run: |
-          az ml environment create --file ${{ github.workspace }}/${{ inputs.environment_file }} --resource-group ${{ inputs.resource_group }} \
-                                  --workspace-name ${{ inputs.workspace_name }}
-      - name: create-environment-from-image
-        if: ${{ inputs.dockerfile-location != ''}}
+          set -euo pipefail
+          az configure --defaults \
+            group="${{ inputs.resource_group }}" \
+            workspace="${{ inputs.workspace_name }}" \
+            location="eastus"
+          az ml workspace show -o table
+
+      # Mode A: env from YAML + CONDA override
+      - name: Create environment (YAML + conda override)
+        if: ${{ inputs.conda_file != '' && inputs.dockerfile_path == '' }}
+        env:
+          ENV_FILE: ${{ github.workspace }}/${{ inputs.environment_file }}
+          CONDA_FILE: ${{ github.workspace }}/${{ inputs.conda_file }}
         run: |
-          az ml environment create --file ${{ github.workspace }}/${{ inputs.environment_file }} --resource-group ${{ inputs.resource_group }} \
-                                  --workspace-name ${{ inputs.workspace_name }} --build-context ${{ github.workspace }}/${{ inputs.dockerfile-location }}
+          set -euo pipefail
+          az ml environment create --file "$ENV_FILE" --conda-file "$CONDA_FILE"
+
+      # Mode B: env from YAML + Docker build context
+      - name: Create environment (YAML + Docker build context)
+        if: ${{ inputs.dockerfile_path != '' && inputs.conda_file == '' }}
+        env:
+          ENV_FILE: ${{ github.workspace }}/${{ inputs.environment_file }}
+          BUILD_CTX: ${{ github.workspace }}/${{ inputs.dockerfile_path }}
+        run: |
+          set -euo pipefail
+          az ml environment create --file "$ENV_FILE" --build-context "$BUILD_CTX"
+
+      # Mode C: env from YAML only
+      - name: Create environment (YAML only)
+        if: ${{ inputs.conda_file == '' && inputs.dockerfile_path == '' }}
+        env:
+          ENV_FILE: ${{ github.workspace }}/${{ inputs.environment_file }}
+        run: |
+          set -euo pipefail
+          az ml environment create --file "$ENV_FILE"
+
+      - name: List environments
+        run: az ml environment list -o table
+
+
+
