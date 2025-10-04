@@ -23,59 +23,36 @@ jobs:
   run-pipeline:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: checkout
+        uses: actions/checkout@v3
 
       - name: Azure login
         uses: azure/login@v1
         with:
           creds: ${{ secrets.creds }}
 
-      - name: Install AML extension
+      - name: Install/Update ML extension
         run: |
-          az extension add -n ml -y || az extension update -n ml
+          az extension add -n ml -y || true
+          az extension update -n ml
 
-      - name: Echo inputs and verify files
+      - name: Show inputs and repo tree
         run: |
           echo "RG=${{ inputs.resource_group }}"
           echo "WS=${{ inputs.workspace_name }}"
-          echo "PARAMS_FILE=${{ github.workspace }}/${{ inputs.parameters_file }}"
-          test -f "${{ github.workspace }}/${{ inputs.parameters_file }}" || { echo "❌ Parameters file not found"; exit 11; }
-          echo "Repo tree:"
-          ls -R
+          echo "JOB=${{ inputs.job_name }}"
+          echo "PARAMS=${{ inputs.parameters_file }}"
+          ls -la
+          echo "-----"
+          ls -la "${{ github.workspace }}/$(dirname "${{ inputs.parameters_file }}")"
 
-      - name: Validate pipeline file
-        run: |
-          az ml job validate \
-            --file "${{ github.workspace }}/${{ inputs.parameters_file }}" \
-            --resource-group "${{ inputs.resource_group }}" \
-            --workspace-name "${{ inputs.workspace_name }}" \
-          || { echo "❌ az ml job validate failed"; exit 12; }
-
-      - name: Create job
-        id: create
+      - name: Submit pipeline (force compute + stream logs)
         run: |
           set -e
-          RUN_ID=$(az ml job create \
+          az ml job create \
             --file "${{ github.workspace }}/${{ inputs.parameters_file }}" \
             --resource-group "${{ inputs.resource_group }}" \
             --workspace-name "${{ inputs.workspace_name }}" \
             --name "${{ inputs.job_name }}" \
-            --query name -o tsv) || { echo "❌ az ml job create failed"; exit 13; }
-
-          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
-          echo "Created run: $RUN_ID"
-          az ml job show -n "$RUN_ID" -g "${{ inputs.resource_group }}" -w "${{ inputs.workspace_name }}" -o yaml
-
-      - name: Stream until completion
-        run: |
-          RUN_ID="${{ steps.create.outputs.run_id }}"
-          echo "Streaming logs for: $RUN_ID"
-          az ml job stream -n "$RUN_ID" -g "${{ inputs.resource_group }}" -w "${{ inputs.workspace_name }}" || true
-
-          STATUS=$(az ml job show -n "$RUN_ID" -g "${{ inputs.resource_group }}" -w "${{ inputs.workspace_name }}" --query status -o tsv)
-          echo "Final status: $STATUS"
-          case "$STATUS" in
-            Completed) exit 0 ;;
-            *) echo "❌ Pipeline finished with status: $STATUS"; exit 14 ;;
-          esac
+            --set settings.default_compute=azureml:test-cluster \
+            --only-show-errors --stream
